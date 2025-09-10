@@ -1,0 +1,15 @@
+[package]
+name = "secure_vault"
+version = "0.3.7"
+edition = "2024"
+
+[dependencies]
+eframe = "0.31.1"
+egui = "0.31.1"
+serde = {version = "1.0", features = ["derive"]}
+serde_json = "1.0"
+rand = "0.8.5"
+aes-gcm = "0.10"
+argon2 = "0.5.3"
+base64 = "0.22.1"
+rpassword = "7"
