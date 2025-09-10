@@ -1,4 +1,4 @@
-use aes_gcm::{Aes256Gcm, Key, Nonce};         // AES-GCM with 256-bit key
+use aes_gcm::{Aes256Gcm, Key, Nonce}; // AES-GCM with 256-bit key
 use aes_gcm::aead::{Aead, KeyInit};
 use argon2::Argon2;
 use rand::rngs::OsRng;
@@ -6,7 +6,10 @@ use rand::RngCore;
 use serde::{Serialize, Deserialize};
 use std::fs;
 use std::io;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _};
+
+
+
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Vault {
@@ -20,7 +23,7 @@ pub struct Entry {
     pub content: String,
 }
 
-#[derive(Debug, PartialEq, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum EntryType {
     Note,
     Password,
@@ -28,11 +31,10 @@ pub enum EntryType {
 
 impl Default for EntryType {
     fn default() -> Self {
-        EntryType::Note // or EntryType::Password, whichever you want as default
+        EntryType::Note
     }
 }
 
-#[allow(dead_code)]
 impl Vault {
     /// Create a new empty vault
     pub fn new() -> Self {
@@ -46,26 +48,13 @@ impl Vault {
         self.entries.push(entry);
     }
 
-    /// Remove an entry by index, returning true if successful
+    /// Remove an entry by index
     pub fn remove_entry(&mut self, index: usize) -> bool {
         if index < self.entries.len() {
             self.entries.remove(index);
             true
         } else {
             false
-        }
-    }
-
-    /// List all entries to stdout
-    pub fn list_entries(&self) {
-        for (i, entry) in self.entries.iter().enumerate() {
-            println!(
-                "[{}] {} ({:?})\n{}\n",
-                i + 1,
-                entry.title,
-                entry.entry_type,
-                entry.content
-            );
         }
     }
 
@@ -77,6 +66,59 @@ impl Vault {
             .hash_password_into(password.as_bytes(), salt, &mut key)
             .expect("Key derivation failed");
         key
+    }
+
+    /// Encrypt and save vault to file at a numbered path
+    pub fn save_with_number(&self, password: &str, vault_number: Option<u32>) -> io::Result<String> {
+        // Determine vault number
+        let number = match vault_number {
+            Some(n) => n,
+            None => Self::next_vault_number()?,
+        };
+
+        let filename = format!("vault_{:02}.dat", number);
+        self.save_encrypted(&filename, password)?;
+        Ok(filename)
+    }
+
+    /// Get next available vault number based on existing vault files
+    fn next_vault_number() -> io::Result<u32> {
+        let mut max_number = 0;
+        for entry in fs::read_dir(".")? {
+            let entry = entry?;
+            if let Some(number) = Self::parse_vault_number(entry.file_name().to_string_lossy().as_ref()) {
+                if number >= max_number {
+                    max_number = number + 1;
+                }
+            }
+        }
+        Ok(max_number)
+    }
+
+    /// Parse vault number from filename
+    pub fn parse_vault_number(filename: &str) -> Option<u32> {
+        if filename.starts_with("vault_") && filename.ends_with(".dat") {
+            let number_str = &filename[6..8];
+            number_str.parse().ok()
+        } else {
+            None
+        }
+    }
+
+    /// Scan all vault files to find the one matching the given password
+    pub fn find_vault_by_passcode(password: &str) -> Option<String> {
+        let paths = fs::read_dir(".").ok()?;
+        for path in paths {
+            if let Ok(entry) = path {
+                let filename = entry.file_name().to_string_lossy().into_owned();
+                if filename.starts_with("vault_") && filename.ends_with(".dat") {
+                    if Vault::load_encrypted(&filename, password).is_ok() {
+                        return Some(filename);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Encrypt and save vault to file at `path`
@@ -92,9 +134,7 @@ impl Vault {
 
         // derive key
         let key_bytes = Self::derive_key(password, &salt);
-        // from_slice returns &GenericArray<u8, _> which is the Key
         let key_slice: &Key<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&key_bytes);
-        // new takes that reference
         let cipher = Aes256Gcm::new(key_slice);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
@@ -108,14 +148,14 @@ impl Vault {
         blob.extend_from_slice(&nonce_bytes);
         blob.extend_from_slice(&ciphertext);
 
-        fs::write(path, general_purpose::STANDARD.encode(blob))?;
+        fs::write(path, base64::engine::general_purpose::STANDARD.encode(blob))?;
         Ok(())
     }
 
     /// Load and decrypt vault from file at `path`
     pub fn load_encrypted(path: &str, password: &str) -> io::Result<Self> {
         let encoded = fs::read_to_string(path)?;
-        let raw = general_purpose::STANDARD
+        let raw = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("Base64 decode failed: {}", e)))?;
 
@@ -130,7 +170,6 @@ impl Vault {
         let nonce_bytes = &raw[16..28];
         let ciphertext = &raw[28..];
 
-        // derive key again
         let key_bytes = Self::derive_key(password, salt);
         let key_slice: &Key<Aes256Gcm> = Key::<Aes256Gcm>::from_slice(&key_bytes);
         let cipher = Aes256Gcm::new(key_slice);

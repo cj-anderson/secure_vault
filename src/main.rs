@@ -1,11 +1,10 @@
-mod vault;
-
 use eframe::{egui, App, Frame};
-use vault::{Entry, EntryType, Vault};
+use secure_vault::vault::{Entry, EntryType, Vault};
 use std::sync::{Arc, Mutex};
 
 struct VaultApp {
     vault: Arc<Mutex<Option<Vault>>>,
+    vault_number: Option<u32>, // Track current vault number
     password: String,
     entries: Vec<Entry>,
     selected_entry: Option<usize>,
@@ -17,7 +16,6 @@ struct VaultApp {
     new_entry_title: String,
     new_entry_content: String,
     new_entry_type: EntryType,
-    vault_path: String,
     error_message: Option<String>,
 }
 
@@ -25,6 +23,7 @@ impl Default for VaultApp {
     fn default() -> Self {
         VaultApp {
             vault: Arc::new(Mutex::new(None)),
+            vault_number: None,
             password: String::new(),
             entries: Vec::new(),
             selected_entry: None,
@@ -36,7 +35,6 @@ impl Default for VaultApp {
             new_entry_title: String::new(),
             new_entry_content: String::new(),
             new_entry_type: EntryType::default(),
-            vault_path: "../../vault.dat".to_string(),
             error_message: None,
         }
     }
@@ -49,35 +47,65 @@ impl VaultApp {
             self.error_message = Some("Password cannot be empty.".to_string());
             return;
         }
-        match Vault::load_encrypted(&self.vault_path, password) {
-            Ok(vault) => {
-                self.entries = vault.entries.clone();
-                *self.vault.lock().unwrap() = Some(vault);
-                self.error_message = None;
+
+        if let Some(filename) = Vault::find_vault_by_passcode(password) {
+            if let Some(vault_number) = Vault::parse_vault_number(&filename) {
+                match Vault::load_encrypted(&filename, password) {
+                    Ok(vault) => {
+                        self.entries = vault.entries.clone();
+                        *self.vault.lock().unwrap() = Some(vault);
+                        self.vault_number = Some(vault_number);
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to load vault: {}", e));
+                        self.entries.clear();
+                        *self.vault.lock().unwrap() = None;
+                        self.vault_number = None;
+                    }
+                }
+            } else {
+                self.error_message = Some("Invalid vault filename format.".to_string());
             }
-            Err(e) => {
-                self.error_message = Some(format!("Failed to load vault: {}", e));
-                self.entries.clear();
-                *self.vault.lock().unwrap() = None;
-            }
+        } else {
+            self.error_message = Some("No vault matches this passcode.".to_string());
+            self.entries.clear();
+            *self.vault.lock().unwrap() = None;
+            self.vault_number = None;
         }
     }
 
     fn save_vault(&mut self) {
         let password = self.password.trim();
+        if password.is_empty() {
+            self.error_message = Some("Password cannot be empty.".to_string());
+            return;
+        }
+
         if let Ok(mut guard) = self.vault.lock() {
             if let Some(vault) = guard.as_mut() {
                 vault.entries = self.entries.clone();
-                if let Err(e) = vault.save_encrypted(&self.vault_path, password) {
-                    self.error_message = Some(format!("Failed to save vault: {}", e));
-                } else {
-                    self.error_message = None;
+                match vault.save_with_number(password, self.vault_number) {
+                    Ok(filename) => {
+                        self.vault_number = Vault::parse_vault_number(&filename);
+                        self.error_message = None;
+                    }
+                    Err(e) => self.error_message = Some(format!("Failed to save vault: {}", e)),
+                }
+            } else {
+                let vault = Vault { entries: self.entries.clone() };
+                match vault.save_with_number(password, None) {
+                    Ok(filename) => {
+                        self.vault_number = Vault::parse_vault_number(&filename);
+                        *self.vault.lock().unwrap() = Some(vault);
+                        self.error_message = None;
+                    }
+                    Err(e) => self.error_message = Some(format!("Failed to save vault: {}", e)),
                 }
             }
         }
     }
 
-    /// Create and save a new empty vault encrypted with the current password
     fn initialize_vault(&mut self) {
         let password = self.password.trim();
         if password.is_empty() {
@@ -86,13 +114,14 @@ impl VaultApp {
         }
 
         let vault = Vault::new();
-
-        if let Err(e) = vault.save_encrypted(&self.vault_path, password) {
-            self.error_message = Some(format!("Failed to initialize vault: {}", e));
-        } else {
-            self.entries.clear();
-            *self.vault.lock().unwrap() = Some(vault);
-            self.error_message = None;
+        match vault.save_with_number(password, None) {
+            Ok(filename) => {
+                self.vault_number = Vault::parse_vault_number(&filename);
+                *self.vault.lock().unwrap() = Some(vault);
+                self.entries.clear();
+                self.error_message = None;
+            }
+            Err(e) => self.error_message = Some(format!("Failed to initialize vault: {}", e)),
         }
     }
 }
